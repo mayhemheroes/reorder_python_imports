@@ -1,0 +1,9 @@
+project: reorder-python-imports
+target: fuzz-imp
+testsuite:
+    - file://mayhem/testsuite
+
+cmds:
+  - cmd: /src/mayhem/fuzz_imp.py
+    libfuzzer: true
+    timeout: 12
