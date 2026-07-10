@@ -14,10 +14,21 @@ from collections.abc import Sequence
 from typing import NamedTuple
 
 from classify_imports import Import
+from classify_imports import import_from_replace
 from classify_imports import import_obj_from_str
+from classify_imports import import_replace
 from classify_imports import ImportFrom
 from classify_imports import Settings
 from classify_imports import sort
+
+
+if sys.version_info >= (3, 15):  # pragma: >=3.15 cover
+    def _preserve_lazy(o: ast.ImportFrom) -> dict[str, int]:
+        return {'is_lazy': o.is_lazy}
+else:  # pragma: <3.15 cover
+    def _preserve_lazy(o: ast.ImportFrom) -> dict[str, int]:
+        return {}
+
 
 CodeType = enum.Enum('CodeType', 'PRE_IMPORT_CODE IMPORT NON_CODE CODE')
 
@@ -34,7 +45,7 @@ SINGLE_1 = r"'[^'\\]*(?:\\.[^'\\]*)*'"
 # END GENERATED
 
 WS = r'[ \f\t]+'
-IMPORT = fr'(?:from|import)(?={WS})'
+IMPORT = fr'(?:lazy{WS})?(?:from|import)(?={WS})'
 EMPTY = fr'[ \f\t]*(?=\n|{COMMENT})'
 OP = '[,.*]'
 ESCAPED_NL = r'\\\n'
@@ -182,10 +193,11 @@ def replace_imports(
 
     for s, import_obj in imports:
         if isinstance(import_obj, Import):
-            mod, asname = import_obj.key
+            mod, asname, _ = import_obj.key_with_lazy
             if asname:
                 if mod in to_replace.mods:
-                    node_i = ast.Import(
+                    node_i = import_replace(
+                        import_obj.node,
                         names=[ast.alias(to_replace.mods[mod], asname)],
                     )
                     obj_i = Import(node_i)
@@ -195,7 +207,8 @@ def replace_imports(
                         if mod_name in to_replace.mods:
                             new_mod = to_replace.mods[mod_name]
                             new_mod_s = f'{new_mod}{mod[len(mod_name):]}'
-                            node_i = ast.Import(
+                            node_i = import_replace(
+                                import_obj.node,
                                 names=[ast.alias(new_mod_s, asname)],
                             )
                             obj_i = Import(node_i)
@@ -206,14 +219,14 @@ def replace_imports(
             else:
                 ret.append((s, import_obj))
         else:
-            mod, symbol, asname = import_obj.key
+            mod, symbol, asname, _ = import_obj.key_with_lazy
             mod_symbol = f'{mod}.{symbol}'
 
             # from a.b.c import d => from e.f.g import d
             if (mod, symbol) in to_replace.exact:
-                node = ast.ImportFrom(
+                node = import_from_replace(
+                    import_obj.node,
                     module=to_replace.exact[mod, symbol],
-                    names=import_obj.node.names,
                     level=0,
                 )
                 obj = ImportFrom(node)
@@ -228,7 +241,8 @@ def replace_imports(
                 new_mod = to_replace.mods[mod_symbol]
                 new_mod, dot, new_sym = new_mod.rpartition('.')
                 if new_mod:
-                    node = ast.ImportFrom(
+                    node = import_from_replace(
+                        import_obj.node,
                         module=new_mod,
                         names=[ast.alias(new_sym, asname)],
                         level=0,
@@ -236,16 +250,19 @@ def replace_imports(
                     obj = ImportFrom(node)
                     ret.append((str(obj), obj))
                 elif not dot:
-                    node_i = ast.Import(names=[ast.alias(new_sym, asname)])
+                    node_i = ast.Import(
+                        names=[ast.alias(new_sym, asname)],
+                        **_preserve_lazy(import_obj.node),
+                    )
                     obj_i = Import(node_i)
                     ret.append((str(obj_i), obj_i))
                 else:
                     ret.append((s, import_obj))
             # from a.b.c import d => from e import d
             elif mod in to_replace.mods:
-                node = ast.ImportFrom(
+                node = import_from_replace(
+                    import_obj.node,
                     module=to_replace.mods[mod],
-                    names=import_obj.node.names,
                     level=0,
                 )
                 obj = ImportFrom(node)
@@ -254,9 +271,9 @@ def replace_imports(
                 for mod_name in _module_to_base_modules(mod):
                     if mod_name in to_replace.mods:
                         new_mod = to_replace.mods[mod_name]
-                        node = ast.ImportFrom(
+                        node = import_from_replace(
+                            import_obj.node,
                             module=f'{new_mod}{mod[len(mod_name):]}',
-                            names=import_obj.node.names,
                             level=0,
                         )
                         obj = ImportFrom(node)
@@ -281,18 +298,18 @@ def _module_to_base_modules(s: str) -> Generator[str]:
 def remove_duplicated_imports(
         imports: list[tuple[str, Import | ImportFrom]],
         *,
-        to_remove: set[tuple[str, ...]],
+        to_remove: set[tuple[object, ...]],
 ) -> list[tuple[str, Import | ImportFrom]]:
     seen = set(to_remove)
     seen_module_names: set[str] = set()
     without_exact_duplicates = []
 
     for s, import_obj in imports:
-        if import_obj.key not in seen:
-            seen.add(import_obj.key)
+        if import_obj.key_with_lazy not in seen:
+            seen.add(import_obj.key_with_lazy)
             if (
                     isinstance(import_obj, Import) and
-                    not import_obj.key.asname
+                    not import_obj.key_with_lazy.asname
             ):
                 seen_module_names.update(
                     _module_to_base_modules(import_obj.module),
@@ -303,8 +320,8 @@ def remove_duplicated_imports(
     for s, import_obj in without_exact_duplicates:
         if (
                 isinstance(import_obj, Import) and
-                not import_obj.key.asname and
-                import_obj.key.module in seen_module_names
+                not import_obj.key_with_lazy.asname and
+                import_obj.key_with_lazy.module in seen_module_names
         ):
             continue
         ret.append((s, import_obj))
@@ -339,7 +356,7 @@ def fix_file_contents(
         contents: str,
         *,
         to_add: tuple[str, ...] = (),
-        to_remove: set[tuple[str, ...]],
+        to_remove: set[tuple[object, ...]],
         to_replace: Replacements,
         settings: Settings = Settings(),
 ) -> str:
@@ -361,7 +378,7 @@ def _fix_file(
         filename: str,
         args: argparse.Namespace,
         *,
-        to_remove: set[tuple[str, ...]],
+        to_remove: set[tuple[object, ...]],
         to_replace: Replacements,
         settings: Settings = Settings(),
 ) -> int:
@@ -858,11 +875,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     to_remove = {
-        obj.key
+        obj.key_with_lazy
         for s in args.remove_import
         for obj in import_obj_from_str(s).split()
     } | {
-        import_obj_from_str(s).key
+        import_obj_from_str(s).key_with_lazy
         for k, v in REMOVALS.items()
         if args.min_version >= k
         for s in v

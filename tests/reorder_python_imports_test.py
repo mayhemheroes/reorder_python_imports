@@ -558,7 +558,7 @@ def test_remove_imports_actually_removes():
         'from __future__ import with_statement\n\n'
         'import os\n',
         to_add=(),
-        to_remove={('__future__', 'with_statement', '')},
+        to_remove={('__future__', 'with_statement', '', 0)},
         to_replace=Replacements.make([]),
     ) == 'import os\n'
 
@@ -1035,6 +1035,52 @@ def test_fix_mixed_uses_first_newline():
         'import sys\n'
         'x = 1\n'
     )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 15), reason='lazy syntax')
+def test_py315_lazy_imports():  # pragma: >=3.15 cover
+    s = (
+        'lazy from unittest import mock\n'
+        'import argparse\n'
+        'lazy import asyncio\n'
+        'from collections.abc import Sequence\n'
+    )
+    ret = fix_file_contents(
+        s,
+        to_add=(),
+        to_remove=set(),
+        to_replace=Replacements.make([]),
+    )
+    assert ret == (
+        'import argparse\n'
+        'from collections.abc import Sequence\n'
+        'lazy import asyncio\n'
+        'lazy from unittest import mock\n'
+    )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 15), reason='lazy syntax')
+@pytest.mark.parametrize(
+    ('s', 'expected'),
+    (
+        ('lazy import a as d\n', 'lazy import b as d\n'),
+        ('lazy import a.c as d\n', 'lazy import b.c as d\n'),
+        ('lazy from a import d\n', 'lazy from b import d\n'),
+        ('lazy from c.d import e\n', 'lazy import e\n'),
+        ('lazy from a.q import d\n', 'lazy from b.q import d\n'),
+        ('lazy from f import g as q\n', 'lazy from h import i as q\n'),
+    ),
+)
+def test_replace_lazy_imports(s, expected):  # pragma: >=3.15 cover
+    ret = fix_file_contents(
+        s,
+        to_add=(),
+        to_remove=set(),
+        to_replace=Replacements.make([
+            ('a', 'b', ''), ('c.d.e', 'e', ''), ('f.g', 'h.i', ''),
+        ]),
+    )
+    assert ret == expected
 
 
 @pytest.mark.parametrize(
