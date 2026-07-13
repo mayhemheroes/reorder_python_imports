@@ -1,0 +1,17 @@
+# Mayhem target: reorder-python-imports (Atheris/libFuzzer harness).
+# The cmd binary is the compiled ELF launcher that drives mayhem/fuzz_imp.py; Atheris instruments
+# the reorder_python_imports module so the run records coverage (edges). Mirrors the fork's
+# original `fuzz-imp` target (fix_file_contents on fuzzer-generated Python source).
+project: reorder-python-imports
+target: fuzz-imp
+
+cmds:
+  - cmd: /mayhem/fuzz_imp
+    libfuzzer: true
+
+# Seed corpus (file:// URIs, per the Mayhemfile schema). The accumulation tar hardcodes the
+# canonical hyphenated project name: the GitHub repo (and thus $MAYHEM_PROJECT) contains
+# underscores, which the server rejects for cross-name testsuite access.
+testsuite:
+  - https://$MAYHEM_DOMAIN/mayhemheroes/reorder-python-imports/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz-imp/testsuite
