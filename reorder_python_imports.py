@@ -420,6 +420,7 @@ REMOVALS: dict[tuple[int, ...], set[str]] = collections.defaultdict(set)
 REPLACES: dict[tuple[int, ...], set[str]] = collections.defaultdict(set)
 
 REMOVALS[(3,)].add('from io import open')
+REMOVALS[(3, 15)].add('from typing_extensions import sentinel')
 
 # GENERATED VIA generate-future-info
 REMOVALS[(2, 2)].add('from __future__ import nested_scopes')
